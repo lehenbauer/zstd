@@ -21,6 +21,9 @@ zstd-release:
 LIBZSTD_MK_DIR = ../lib
 include $(LIBZSTD_MK_DIR)/libzstd.mk
 
+CPPFLAGS += -I../lib -I../lib/common -I../contrib/seekable_format
+VPATH += ../contrib/seekable_format
+
 ifeq ($(shell $(CC) -v 2>&1 | $(GREP) -c "gcc version "), 1)
   ALIGN_LOOP = -falign-loops=32
 else
@@ -41,6 +44,7 @@ ZSTDLIB_LOCAL_OBJ0 := $(ZSTDLIB_LOCAL_SRC:.c=.o)
 ZSTDLIB_LOCAL_OBJ := $(ZSTDLIB_LOCAL_OBJ0:.S=.o)
 
 ZSTD_CLI_SRC := $(sort $(wildcard *.c))
+ZSTD_CLI_SRC += zstdseek_compress.c
 ZSTD_CLI_OBJ := $(ZSTD_CLI_SRC:.c=.o)
 
 ZSTD_ALL_SRC = $(ZSTDLIB_LOCAL_SRC) $(ZSTD_CLI_SRC)
@@ -253,7 +257,7 @@ endif
 ## zstd-small: minimal target, supporting only zstd compression and decompression. no bench. no legacy. no other format.
 CLEAN += zstd-small zstd-frugal
 zstd-small: CFLAGS = -Os -Wl,-s
-zstd-frugal zstd-small: $(ZSTDLIB_CORE_SRC) zstdcli.c util.c timefn.c fileio.c fileio_asyncio.c
+zstd-frugal zstd-small: $(ZSTDLIB_CORE_SRC) zstdcli.c util.c timefn.c fileio.c fileio_asyncio.c zstdseek_compress.c
 	$(CC) $(FLAGS) -DZSTD_NOBENCH -DZSTD_NODICT -DZSTD_NOTRACE -UZSTD_LEGACY_SUPPORT -DZSTD_LEGACY_SUPPORT=0 $^ -o $@$(EXT)
 
 CLEAN += zstd-decompress
@@ -261,12 +265,12 @@ zstd-decompress: $(ZSTDLIB_COMMON_SRC) $(ZSTDLIB_DECOMPRESS_SRC) zstdcli.c util.
 	$(CC) $(FLAGS) -DZSTD_NOBENCH -DZSTD_NODICT -DZSTD_NOCOMPRESS -DZSTD_NOTRACE -UZSTD_LEGACY_SUPPORT -DZSTD_LEGACY_SUPPORT=0 $^ -o $@$(EXT)
 
 CLEAN += zstd-compress
-zstd-compress: $(ZSTDLIB_COMMON_SRC) $(ZSTDLIB_COMPRESS_SRC) zstdcli.c util.c timefn.c fileio.c fileio_asyncio.c
+zstd-compress: $(ZSTDLIB_COMMON_SRC) $(ZSTDLIB_COMPRESS_SRC) zstdcli.c util.c timefn.c fileio.c fileio_asyncio.c zstdseek_compress.c
 	$(CC) $(FLAGS) -DZSTD_NOBENCH -DZSTD_NODICT -DZSTD_NODECOMPRESS -DZSTD_NOTRACE -UZSTD_LEGACY_SUPPORT -DZSTD_LEGACY_SUPPORT=0 $^ -o $@$(EXT)
 
 ## zstd-dictBuilder: executable supporting dictionary creation and compression (only)
 CLEAN += zstd-dictBuilder
-zstd-dictBuilder: $(ZSTDLIB_COMMON_SRC) $(ZSTDLIB_COMPRESS_SRC) $(ZDICT_SRC) zstdcli.c util.c timefn.c fileio.c fileio_asyncio.c dibio.c
+zstd-dictBuilder: $(ZSTDLIB_COMMON_SRC) $(ZSTDLIB_COMPRESS_SRC) $(ZDICT_SRC) zstdcli.c util.c timefn.c fileio.c fileio_asyncio.c dibio.c zstdseek_compress.c
 	$(CC) $(FLAGS) -DZSTD_NOBENCH -DZSTD_NODECOMPRESS -DZSTD_NOTRACE $^ -o $@$(EXT)
 
 CLEAN += zstdmt

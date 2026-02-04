@@ -195,6 +195,13 @@ the last one takes effect.
     This feature does not work with `--single-thread`. You probably don't want
     to use it with long range mode, since it will decrease the effectiveness of
     the synchronization points, but your mileage may vary.
+* `--seekable`:
+    Generate a seek table at the end of the file and split the stream into
+    independent frames. Standard zstd decoders ignore the seek table, but it
+    enables fast random access when using seekable-aware tooling.
+* `--chunk-size=#`:
+    Maximum uncompressed bytes per frame when using `--seekable`
+    (default: 256 KiB). Accepts K/M/G suffixes (and KiB/MiB/GiB).
 * `-C`, `--[no-]check`:
     add integrity check computed from uncompressed data (default: enabled)
 * `--[no-]content-size`:

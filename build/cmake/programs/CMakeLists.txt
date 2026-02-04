@@ -14,7 +14,8 @@ set(CMAKE_INCLUDE_CURRENT_DIR TRUE)
 # Define programs directory, where sources and header files are located
 set(LIBRARY_DIR ${ZSTD_SOURCE_DIR}/lib)
 set(PROGRAMS_DIR ${ZSTD_SOURCE_DIR}/programs)
-include_directories(${PROGRAMS_DIR} ${LIBRARY_DIR} ${LIBRARY_DIR}/common ${LIBRARY_DIR}/compress ${LIBRARY_DIR}/dictBuilder)
+set(CONTRIB_SEEKABLE_DIR ${ZSTD_SOURCE_DIR}/contrib/seekable_format)
+include_directories(${PROGRAMS_DIR} ${LIBRARY_DIR} ${LIBRARY_DIR}/common ${LIBRARY_DIR}/compress ${LIBRARY_DIR}/dictBuilder ${CONTRIB_SEEKABLE_DIR})
 
 if (ZSTD_LEGACY_SUPPORT)
     set(PROGRAMS_LEGACY_DIR ${PROGRAMS_DIR}/legacy)
@@ -33,6 +34,7 @@ if (MSVC)
 endif ()
 
 file(GLOB ZSTD_PROGRAM_SRCS "${PROGRAMS_DIR}/*.c")
+list(APPEND ZSTD_PROGRAM_SRCS ${CONTRIB_SEEKABLE_DIR}/zstdseek_compress.c)
 if (MSVC AND ZSTD_PROGRAMS_LINK_SHARED)
     list(APPEND ZSTD_PROGRAM_SRCS ${LIBRARY_DIR}/common/pool.c ${LIBRARY_DIR}/common/threading.c)
 endif ()
@@ -82,7 +84,8 @@ if (UNIX)
 
     add_executable(zstd-frugal ${PROGRAMS_DIR}/zstdcli.c
         ${PROGRAMS_DIR}/util.c ${PROGRAMS_DIR}/timefn.c
-        ${PROGRAMS_DIR}/fileio.c ${PROGRAMS_DIR}/fileio_asyncio.c)
+        ${PROGRAMS_DIR}/fileio.c ${PROGRAMS_DIR}/fileio_asyncio.c
+        ${CONTRIB_SEEKABLE_DIR}/zstdseek_compress.c)
     target_link_libraries(zstd-frugal ${PROGRAMS_ZSTD_LINK_TARGET})
     set_property(TARGET zstd-frugal APPEND PROPERTY COMPILE_DEFINITIONS "ZSTD_NOBENCH;ZSTD_NODICT;ZSTD_NOTRACE")
 endif ()

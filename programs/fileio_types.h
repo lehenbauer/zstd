@@ -42,6 +42,8 @@ typedef struct FIO_prefs_s {
     int adaptiveMode;
     int useRowMatchFinder;
     int rsyncable;
+    int seekable;
+    size_t seekableChunkSize;
     int minAdaptLevel;
     int maxAdaptLevel;
     int ldmFlag;

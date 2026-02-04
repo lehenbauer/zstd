@@ -36,6 +36,8 @@
 #include <signal.h>
 #include "timefn.h"     /* UTIL_getTime, UTIL_clockSpanMicro */
 
+#include "../lib/common/xxhash.h"
+#include "zstd_seekable.h"
 #if defined (_MSC_VER)
 #  include <sys/stat.h>
 #  include <io.h>
@@ -557,6 +559,8 @@ FIO_prefs_t* FIO_createPreferences(void)
     ret->overlapLog = FIO_OVERLAP_LOG_NOTSET;
     ret->adaptiveMode = 0;
     ret->rsyncable = 0;
+    ret->seekable = 0;
+    ret->seekableChunkSize = FIO_SEEKABLE_DEFAULT_CHUNK_SIZE;
     ret->minAdaptLevel = -50;   /* initializing this value requires a constant, so ZSTD_minCLevel() doesn't work */
     ret->maxAdaptLevel = 22;   /* initializing this value requires a constant, so ZSTD_maxCLevel() doesn't work */
     ret->ldmFlag = 0;
@@ -668,6 +672,14 @@ void FIO_setRsyncable(FIO_prefs_t* const prefs, int rsyncable) {
     if ((rsyncable>0) && (prefs->nbWorkers==0))
         EXM_THROW(1, "Rsyncable mode is not compatible with single thread mode \n");
     prefs->rsyncable = rsyncable;
+}
+
+void FIO_setSeekable(FIO_prefs_t* const prefs, int seekable) {
+    prefs->seekable = (seekable != 0);
+}
+
+void FIO_setSeekableChunkSize(FIO_prefs_t* const prefs, size_t chunkSize) {
+    prefs->seekableChunkSize = chunkSize;
 }
 
 void FIO_setStreamSrcSize(FIO_prefs_t* const prefs, size_t streamSrcSize) {
@@ -1750,6 +1762,191 @@ FIO_compressLz4Frame(cRess_t* ress,
 #endif
 
 static unsigned long long
+FIO_compressZstdSeekableFrame(FIO_ctx_t* const fCtx,
+                              FIO_prefs_t* const prefs,
+                              cRess_t* ress,
+                              const char* srcFileName, U64 fileSize,
+                              int compressionLevel, U64* readsize)
+{
+    FIO_SyncCompressIO* const syncIO = &ress->io;
+    U64 compressedfilesize = 0;
+    U64 totalDecompressed = 0;
+    U64 frameCompressed = 0;
+    U64 frameDecompressed = 0;
+    int inputFinished = 0;
+    size_t const maxFrameSize = prefs->seekableChunkSize ? prefs->seekableChunkSize : FIO_SEEKABLE_DEFAULT_CHUNK_SIZE;
+    U64 const pledgedTotalSize = (fileSize != UTIL_FILESIZE_UNKNOWN) ? fileSize :
+                                 (prefs->streamSrcSize ? (U64)prefs->streamSrcSize : UTIL_FILESIZE_UNKNOWN);
+    ZSTD_frameLog* const frameLog = ZSTD_seekable_createFrameLog(prefs->checksumFlag);
+    XXH64_state_t* xxhState = NULL;
+
+    (void)fCtx;
+    (void)srcFileName;
+    (void)compressionLevel;
+
+    if (maxFrameSize == 0) {
+        EXM_THROW(1, "Invalid --chunk-size=0");
+    }
+    if (maxFrameSize > ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE) {
+        EXM_THROW(1, "Seekable chunk size too large (max %u bytes)",
+                  (unsigned)ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE);
+    }
+
+    if (frameLog == NULL) {
+        EXM_THROW(30, "allocation error (%s): can't create seekable frame log",
+                  strerror(errno));
+    }
+    if (prefs->checksumFlag) {
+        xxhState = XXH64_createState();
+        if (xxhState == NULL) {
+            ZSTD_seekable_freeFrameLog(frameLog);
+            EXM_THROW(30, "allocation error (%s): can't create checksum state",
+                      strerror(errno));
+        }
+        XXH64_reset(xxhState, 0);
+    }
+
+    DISPLAYLEVEL(6, "compression using zstd seekable format \n");
+
+    /* start first frame */
+    CHECK(ZSTD_CCtx_reset(ress->cctx, ZSTD_reset_session_only));
+    if (pledgedTotalSize != UTIL_FILESIZE_UNKNOWN) {
+        U64 remaining;
+        U64 pledged;
+        if (totalDecompressed > pledgedTotalSize) {
+            EXM_THROW(27, "Read error : Input larger than specified stream size");
+        }
+        remaining = pledgedTotalSize - totalDecompressed;
+        pledged = MIN((U64)maxFrameSize, remaining);
+        CHECK(ZSTD_CCtx_setPledgedSrcSize(ress->cctx, pledged));
+    }
+
+    while (1) {
+        size_t remainingToFlush = 0;
+        size_t inSize = 0;
+        ZSTD_EndDirective directive = ZSTD_e_continue;
+
+        if (!inputFinished && syncIO->srcBufferLoaded == 0) {
+            size_t const added = FIO_SyncCompressIO_fillBuffer(syncIO, ZSTD_CStreamInSize());
+            *readsize += added;
+            if (syncIO->srcBufferLoaded == 0) {
+                inputFinished = 1;
+            }
+        }
+
+        if (frameDecompressed < maxFrameSize) {
+            size_t const frameRemaining = (size_t)(maxFrameSize - frameDecompressed);
+            inSize = MIN(syncIO->srcBufferLoaded, frameRemaining);
+            if (inSize == frameRemaining && inSize > 0) {
+                directive = ZSTD_e_end;  /* end frame after consuming this input */
+            } else if (inputFinished && inSize == syncIO->srcBufferLoaded) {
+                directive = ZSTD_e_end;  /* end frame at end of input */
+            }
+        } else {
+            directive = ZSTD_e_end;  /* frame full; flush without more input */
+        }
+
+        if (inSize == 0 && directive != ZSTD_e_end) {
+            continue;
+        }
+
+        {   ZSTD_inBuffer inBuff = setInBuffer(syncIO->srcBuffer, inSize, 0);
+            do {
+                size_t const oldIPos = inBuff.pos;
+                ZSTD_outBuffer outBuff = setOutBuffer(syncIO->outBuffer, syncIO->outCapacity, 0);
+                CHECK_V(remainingToFlush, ZSTD_compressStream2(ress->cctx, &outBuff, &inBuff, directive));
+
+                if (prefs->checksumFlag && inBuff.pos > oldIPos) {
+                    XXH64_update(xxhState,
+                                 (const BYTE*)inBuff.src + oldIPos,
+                                 inBuff.pos - oldIPos);
+                }
+
+                frameDecompressed += inBuff.pos - oldIPos;
+                totalDecompressed += inBuff.pos - oldIPos;
+
+                if (outBuff.pos) {
+                    FIO_SyncCompressIO_commitOut(syncIO, syncIO->outBuffer, outBuff.pos);
+                    compressedfilesize += outBuff.pos;
+                    frameCompressed += outBuff.pos;
+                }
+
+                if (pledgedTotalSize == UTIL_FILESIZE_UNKNOWN) {
+                    DISPLAYUPDATE_PROGRESS(
+                            "\rRead : %u MB ==> %.2f%% ",
+                            (unsigned)(*readsize>>20),
+                            (double)compressedfilesize/(double)(*readsize ? *readsize : 1) * 100);
+                } else if (*readsize > 0) {
+                    DISPLAYUPDATE_PROGRESS(
+                            "\rRead : %u / %u MB ==> %.2f%% ",
+                            (unsigned)(*readsize>>20), (unsigned)(pledgedTotalSize>>20),
+                            (double)compressedfilesize/(double)(*readsize) * 100);
+                }
+            } while ((inBuff.pos != inBuff.size) || (directive == ZSTD_e_end && remainingToFlush != 0));
+
+            FIO_SyncCompressIO_consumeBytes(syncIO, inBuff.pos);
+
+            if (directive == ZSTD_e_end && remainingToFlush == 0 && inBuff.pos == inBuff.size) {
+                unsigned const checksum = prefs->checksumFlag
+                        ? (unsigned)(XXH64_digest(xxhState) & 0xFFFFFFFFU)
+                        : 0;
+                CHECK(ZSTD_seekable_logFrame(frameLog,
+                                             (unsigned)frameCompressed,
+                                             (unsigned)frameDecompressed,
+                                             checksum));
+                frameCompressed = 0;
+                frameDecompressed = 0;
+                if (prefs->checksumFlag) {
+                    XXH64_reset(xxhState, 0);
+                }
+
+                if (inputFinished && syncIO->srcBufferLoaded == 0) {
+                    break;
+                }
+                CHECK(ZSTD_CCtx_reset(ress->cctx, ZSTD_reset_session_only));
+                if (pledgedTotalSize != UTIL_FILESIZE_UNKNOWN) {
+                    U64 remaining;
+                    U64 pledged;
+                    if (totalDecompressed > pledgedTotalSize) {
+                        EXM_THROW(27, "Read error : Input larger than specified stream size");
+                    }
+                    remaining = pledgedTotalSize - totalDecompressed;
+                    pledged = MIN((U64)maxFrameSize, remaining);
+                    CHECK(ZSTD_CCtx_setPledgedSrcSize(ress->cctx, pledged));
+                }
+            }
+        }
+    }
+
+    if (fileSize != UTIL_FILESIZE_UNKNOWN && *readsize != fileSize) {
+        EXM_THROW(27, "Read error : Incomplete read : %llu / %llu B",
+                  (unsigned long long)*readsize, (unsigned long long)fileSize);
+    }
+
+    while (1) {
+        ZSTD_outBuffer outBuff = setOutBuffer(syncIO->outBuffer, syncIO->outCapacity, 0);
+        size_t const remainingToFlush = ZSTD_seekable_writeSeekTable(frameLog, &outBuff);
+        if (ZSTD_isError(remainingToFlush)) {
+            EXM_THROW(11, "%s", ZSTD_getErrorName(remainingToFlush));
+        }
+        if (outBuff.pos) {
+            FIO_SyncCompressIO_commitOut(syncIO, syncIO->outBuffer, outBuff.pos);
+            compressedfilesize += outBuff.pos;
+        }
+        if (remainingToFlush == 0) break;
+    }
+
+    ZSTD_seekable_freeFrameLog(frameLog);
+    if (xxhState != NULL) {
+        XXH64_freeState(xxhState);
+    }
+
+    FIO_SyncCompressIO_finish(syncIO);
+
+    return compressedfilesize;
+}
+
+static unsigned long long
 FIO_compressZstdFrame(FIO_ctx_t* const fCtx,
                       FIO_prefs_t* const prefs,
                       cRess_t* ress,
@@ -2006,7 +2203,11 @@ FIO_compressFilename_internal(FIO_ctx_t* const fCtx,
     switch (prefs->compressionType) {
         default:
         case FIO_zstdCompression:
-            compressedfilesize = FIO_compressZstdFrame(fCtx, prefs, ress, srcFileName, fileSize, compressionLevel, &readsize);
+            if (prefs->seekable) {
+                compressedfilesize = FIO_compressZstdSeekableFrame(fCtx, prefs, ress, srcFileName, fileSize, compressionLevel, &readsize);
+            } else {
+                compressedfilesize = FIO_compressZstdFrame(fCtx, prefs, ress, srcFileName, fileSize, compressionLevel, &readsize);
+            }
             break;
 
         case FIO_gzipCompression:
@@ -2376,6 +2577,9 @@ void FIO_displayCompressionParameters(const FIO_prefs_t* prefs)
         DISPLAY(" --adapt=min=%d,max=%d", prefs->minAdaptLevel, prefs->maxAdaptLevel);
     DISPLAY("%s", INDEX(rowMatchFinderOptions, prefs->useRowMatchFinder));
     DISPLAY("%s", prefs->rsyncable ? " --rsyncable" : "");
+    if (prefs->seekable) {
+        DISPLAY(" --seekable --chunk-size=%u", (unsigned)prefs->seekableChunkSize);
+    }
     if (prefs->streamSrcSize)
         DISPLAY(" --stream-size=%u", (unsigned) prefs->streamSrcSize);
     if (prefs->srcSizeHint)

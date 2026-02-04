@@ -22,6 +22,7 @@
 #define KB *(1 <<10)
 #define MB *(1 <<20)
 #define GB *(1U<<30)
+#define FIO_SEEKABLE_DEFAULT_CHUNK_SIZE (256 KB)
 #undef MAX
 #define MAX(a,b) ((a)>(b) ? (a) : (b))
 #undef MIN  /* in case it would be already defined */

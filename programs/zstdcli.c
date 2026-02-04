@@ -17,6 +17,7 @@
 #include <string.h>   /* strcmp, strlen */
 #include <stdio.h>    /* fprintf(), stdin, stdout, stderr */
 #include <assert.h>   /* assert */
+#include <ctype.h>    /* toupper */
 
 #include "fileio.h"   /* stdinmark, stdoutmark, ZSTD_EXTENSION */
 #ifndef ZSTD_NOBENCH
@@ -242,6 +243,9 @@ static void usageAdvanced(const char* programName)
     DISPLAYOUT("  --rsyncable                   Compress using a rsync-friendly method (`--jobsize=#` sets unit size). \n");
     DISPLAYOUT("\n");
 # endif
+    DISPLAYOUT("  --seekable                    Create a seekable `.zst` file (adds a seek table).\n");
+    DISPLAYOUT("  --chunk-size=#                Uncompressed bytes per frame for --seekable. [Default: 256 KB]\n");
+    DISPLAYOUT("                                Suffixes K/M/G (and KiB/MiB/GiB) are supported.\n\n");
     DISPLAYOUT("  --exclude-compressed          Only compress files that are not already compressed.\n\n");
 
     DISPLAYOUT("  --stream-size=#               Specify size of streaming input from STDIN.\n");
@@ -347,7 +351,7 @@ static void errorOut(const char* msg)
 
 /*! readU32FromCharChecked() :
  * @return 0 if success, and store the result in *value.
- *  allows and interprets K, KB, KiB, M, MB and MiB suffix.
+ *  allows and interprets K, KB, KiB, M, MB, MiB, G, GB and GiB suffix (case-insensitive).
  *  Will also modify `*stringPtr`, advancing it to position where it stopped reading.
  * @return 1 if an overflow error occurs */
 static int readU32FromCharChecked(const char** stringPtr, unsigned* value)
@@ -362,17 +366,18 @@ static int readU32FromCharChecked(const char** stringPtr, unsigned* value)
         if (result < last) return 1; /* overflow error */
         (*stringPtr)++ ;
     }
-    if ((**stringPtr=='K') || (**stringPtr=='M')) {
-        unsigned const maxK = ((unsigned)(-1)) >> 10;
-        if (result > maxK) return 1; /* overflow error */
-        result <<= 10;
-        if (**stringPtr=='M') {
-            if (result > maxK) return 1; /* overflow error */
-            result <<= 10;
+    {   int const suffix = toupper((unsigned char)**stringPtr);
+        if (suffix=='K' || suffix=='M' || suffix=='G') {
+            unsigned const maxK = ((unsigned)(-1)) >> 10;
+            int shiftCount = (suffix=='K') ? 1 : (suffix=='M') ? 2 : 3;
+            while (shiftCount-- > 0) {
+                if (result > maxK) return 1; /* overflow error */
+                result <<= 10;
+            }
+            (*stringPtr)++;  /* skip suffix */
+            if ((**stringPtr=='i') || (**stringPtr=='I')) (*stringPtr)++;
+            if ((**stringPtr=='B') || (**stringPtr=='b')) (*stringPtr)++;
         }
-        (*stringPtr)++;  /* skip `K` or `M` */
-        if (**stringPtr=='i') (*stringPtr)++;
-        if (**stringPtr=='B') (*stringPtr)++;
     }
     *value = result;
     return 0;
@@ -380,7 +385,7 @@ static int readU32FromCharChecked(const char** stringPtr, unsigned* value)
 
 /*! readU32FromChar() :
  * @return : unsigned integer value read from input in `char` format.
- *  allows and interprets K, KB, KiB, M, MB and MiB suffix.
+ *  allows and interprets K, KB, KiB, M, MB, MiB, G, GB and GiB suffix (case-insensitive).
  *  Will also modify `*stringPtr`, advancing it to position where it stopped reading.
  *  Note : function will exit() program if digit sequence overflows */
 static unsigned readU32FromChar(const char** stringPtr) {
@@ -392,7 +397,7 @@ static unsigned readU32FromChar(const char** stringPtr) {
 
 /*! readIntFromChar() :
  * @return : signed integer value read from input in `char` format.
- *  allows and interprets K, KB, KiB, M, MB and MiB suffix.
+ *  allows and interprets K, KB, KiB, M, MB, MiB, G, GB and GiB suffix (case-insensitive).
  *  Will also modify `*stringPtr`, advancing it to position where it stopped reading.
  *  Note : function will exit() program if digit sequence overflows */
 static int readIntFromChar(const char** stringPtr) {
@@ -409,7 +414,7 @@ static int readIntFromChar(const char** stringPtr) {
 
 /*! readSizeTFromCharChecked() :
  * @return 0 if success, and store the result in *value.
- *  allows and interprets K, KB, KiB, M, MB and MiB suffix.
+ *  allows and interprets K, KB, KiB, M, MB, MiB, G, GB and GiB suffix (case-insensitive).
  *  Will also modify `*stringPtr`, advancing it to position where it stopped reading.
  * @return 1 if an overflow error occurs */
 static int readSizeTFromCharChecked(const char** stringPtr, size_t* value)
@@ -424,17 +429,18 @@ static int readSizeTFromCharChecked(const char** stringPtr, size_t* value)
         if (result < last) return 1; /* overflow error */
         (*stringPtr)++ ;
     }
-    if ((**stringPtr=='K') || (**stringPtr=='M')) {
-        size_t const maxK = ((size_t)(-1)) >> 10;
-        if (result > maxK) return 1; /* overflow error */
-        result <<= 10;
-        if (**stringPtr=='M') {
-            if (result > maxK) return 1; /* overflow error */
-            result <<= 10;
+    {   int const suffix = toupper((unsigned char)**stringPtr);
+        if (suffix=='K' || suffix=='M' || suffix=='G') {
+            size_t const maxK = ((size_t)(-1)) >> 10;
+            int shiftCount = (suffix=='K') ? 1 : (suffix=='M') ? 2 : 3;
+            while (shiftCount-- > 0) {
+                if (result > maxK) return 1; /* overflow error */
+                result <<= 10;
+            }
+            (*stringPtr)++;  /* skip suffix */
+            if ((**stringPtr=='i') || (**stringPtr=='I')) (*stringPtr)++;
+            if ((**stringPtr=='B') || (**stringPtr=='b')) (*stringPtr)++;
         }
-        (*stringPtr)++;  /* skip `K` or `M` */
-        if (**stringPtr=='i') (*stringPtr)++;
-        if (**stringPtr=='B') (*stringPtr)++;
     }
     *value = result;
     return 0;
@@ -442,7 +448,7 @@ static int readSizeTFromCharChecked(const char** stringPtr, size_t* value)
 
 /*! readSizeTFromChar() :
  * @return : size_t value read from input in `char` format.
- *  allows and interprets K, KB, KiB, M, MB and MiB suffix.
+ *  allows and interprets K, KB, KiB, M, MB, MiB, G, GB and GiB suffix (case-insensitive).
  *  Will also modify `*stringPtr`, advancing it to position where it stopped reading.
  *  Note : function will exit() program if digit sequence overflows */
 static size_t readSizeTFromChar(const char** stringPtr) {
@@ -830,7 +836,7 @@ static unsigned init_nbWorkers(unsigned defaultNbWorkers) {
     NEXT_FIELD(__nb);                 \
     _varu32 = readU32FromChar(&__nb); \
     if(*__nb != 0) {                  \
-        errorOut("error: only numeric values with optional suffixes K, KB, KiB, M, MB, MiB are allowed"); \
+        errorOut("error: only numeric values with optional suffixes K, KB, KiB, M, MB, MiB, G, GB, GiB are allowed"); \
     }                                 \
 }
 
@@ -839,7 +845,7 @@ static unsigned init_nbWorkers(unsigned defaultNbWorkers) {
     NEXT_FIELD(__nb);                     \
     _varTsize = readSizeTFromChar(&__nb); \
     if(*__nb != 0) {                      \
-        errorOut("error: only numeric values with optional suffixes K, KB, KiB, M, MB, MiB are allowed"); \
+        errorOut("error: only numeric values with optional suffixes K, KB, KiB, M, MB, MiB, G, GB, GiB are allowed"); \
     }                                     \
 }
 
@@ -870,6 +876,8 @@ int main(int argCount, const char* argv[])
         adaptMin = MINCLEVEL,
         adaptMax = MAXCLEVEL,
         rsyncable = 0,
+        seekable = 0,
+        seekableChunkSizeSet = 0,
         nextArgumentsAreFiles = 0,
         operationResult = 0,
         separateFiles = 0,
@@ -890,6 +898,7 @@ int main(int argCount, const char* argv[])
     double compressibility = -1.0;  /* lorem ipsum generator */
     unsigned bench_nbSeconds = 3;   /* would be better if this value was synchronized from bench */
     size_t chunkSize = 0;
+    size_t seekableChunkSize = FIO_SEEKABLE_DEFAULT_CHUNK_SIZE;
 
     FIO_prefs_t* const prefs = FIO_createPreferences();
     FIO_ctx_t* const fCtx = FIO_createContext();
@@ -1029,6 +1038,7 @@ int main(int argCount, const char* argv[])
                 if (!strcmp(argument, "--format=lz4")) { suffix = LZ4_EXTENSION; cType = FIO_lz4Compression; continue; }
 #endif
                 if (!strcmp(argument, "--rsyncable")) { rsyncable = 1; continue; }
+                if (!strcmp(argument, "--seekable")) { seekable = 1; continue; }
                 if (!strcmp(argument, "--compress-literals")) { literalCompressionMode = ZSTD_ps_enable; continue; }
                 if (!strcmp(argument, "--no-compress-literals")) { literalCompressionMode = ZSTD_ps_disable; continue; }
                 if (!strcmp(argument, "--no-progress")) { progress = FIO_ps_never; continue; }
@@ -1092,6 +1102,7 @@ int main(int argCount, const char* argv[])
                 if (longCommandWArg(&argument, "--block-size")) { NEXT_TSIZE(chunkSize); continue; } /* hidden command, prefer --split below */
                 if (longCommandWArg(&argument, "--split")) { NEXT_TSIZE(chunkSize); continue; }
                 if (longCommandWArg(&argument, "--jobsize")) { NEXT_TSIZE(chunkSize); continue; } /* note: overloaded variable */
+                if (longCommandWArg(&argument, "--chunk-size")) { NEXT_TSIZE(seekableChunkSize); seekableChunkSizeSet = 1; continue; }
                 if (longCommandWArg(&argument, "--maxdict")) { NEXT_UINT32(maxDictSize); continue; }
                 if (longCommandWArg(&argument, "--dictID")) { NEXT_UINT32(dictID); continue; }
                 if (longCommandWArg(&argument, "--zstd=")) { if (!parseCompressionParameters(argument, &compressionParams)) { badUsage(programName, originalArgument); CLEAN_RETURN(1); } ; cType = FIO_zstdCompression; continue; }
@@ -1562,6 +1573,20 @@ int main(int argCount, const char* argv[])
         CLEAN_RETURN(1);
     }
 
+    if (operation == zom_compress) {
+        if (seekable && cType != FIO_zstdCompression) {
+            DISPLAYLEVEL(1, "error : --seekable is only supported with --format=zstd \n");
+            CLEAN_RETURN(1);
+        }
+        if (seekable && seekableChunkSize == 0) {
+            DISPLAYLEVEL(1, "error : --chunk-size must be greater than 0 \n");
+            CLEAN_RETURN(1);
+        }
+        if (!seekable && seekableChunkSizeSet) {
+            DISPLAYLEVEL(2, "Note : --chunk-size is ignored unless --seekable is set \n");
+        }
+    }
+
     /* No status message by default when output is stdout */
     hasStdout = outFileName && !strcmp(outFileName,stdoutmark);
     if (hasStdout && (g_displayLevel==2)) g_displayLevel=1;
@@ -1612,6 +1637,8 @@ int main(int argCount, const char* argv[])
         FIO_setAdaptMin(prefs, adaptMin);
         FIO_setAdaptMax(prefs, adaptMax);
         FIO_setRsyncable(prefs, rsyncable);
+        FIO_setSeekable(prefs, seekable);
+        FIO_setSeekableChunkSize(prefs, seekableChunkSize);
         FIO_setStreamSrcSize(prefs, streamSrcSize);
         FIO_setTargetCBlockSize(prefs, targetCBlockSize);
         FIO_setSrcSizeHint(prefs, srcSizeHint);
@@ -1644,6 +1671,7 @@ int main(int argCount, const char* argv[])
 #else
         /* these variables are only used when compression mode is enabled */
         (void)contentSize; (void)suffix; (void)adapt; (void)rsyncable;
+        (void)seekable; (void)seekableChunkSize; (void)seekableChunkSizeSet;
         (void)ultra; (void)cLevel; (void)ldmFlag; (void)literalCompressionMode;
         (void)targetCBlockSize; (void)streamSrcSize; (void)srcSizeHint;
         (void)ZSTD_strategyMap; (void)useRowMatchFinder; (void)cType;
