@@ -1787,6 +1787,10 @@ FIO_compressZstdSeekableFrame(FIO_ctx_t* const fCtx,
     if (maxFrameSize == 0) {
         EXM_THROW(1, "Invalid --chunk-size=0");
     }
+    if (maxFrameSize < FIO_SEEKABLE_MIN_CHUNK_SIZE) {
+        EXM_THROW(1, "Seekable chunk size too small (min %u bytes)",
+                  (unsigned)FIO_SEEKABLE_MIN_CHUNK_SIZE);
+    }
     if (maxFrameSize > ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE) {
         EXM_THROW(1, "Seekable chunk size too large (max %u bytes)",
                   (unsigned)ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE);

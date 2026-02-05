@@ -244,7 +244,7 @@ static void usageAdvanced(const char* programName)
     DISPLAYOUT("\n");
 # endif
     DISPLAYOUT("  --seekable                    Create a seekable `.zst` file (adds a seek table).\n");
-    DISPLAYOUT("  --chunk-size=#                Uncompressed bytes per frame for --seekable. [Default: 256 KB]\n");
+    DISPLAYOUT("  --chunk-size=#                Uncompressed bytes per frame for --seekable. [Default: 256 KB; min: 1 KB]\n");
     DISPLAYOUT("                                Suffixes K/M/G (and KiB/MiB/GiB) are supported.\n\n");
     DISPLAYOUT("  --exclude-compressed          Only compress files that are not already compressed.\n\n");
 
@@ -1578,8 +1578,9 @@ int main(int argCount, const char* argv[])
             DISPLAYLEVEL(1, "error : --seekable is only supported with --format=zstd \n");
             CLEAN_RETURN(1);
         }
-        if (seekable && seekableChunkSize == 0) {
-            DISPLAYLEVEL(1, "error : --chunk-size must be greater than 0 \n");
+        if (seekable && seekableChunkSize < FIO_SEEKABLE_MIN_CHUNK_SIZE) {
+            DISPLAYLEVEL(1, "error : --chunk-size must be at least %u bytes \n",
+                         (unsigned)FIO_SEEKABLE_MIN_CHUNK_SIZE);
             CLEAN_RETURN(1);
         }
         if (!seekable && seekableChunkSizeSet) {

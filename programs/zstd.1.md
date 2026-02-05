@@ -201,7 +201,7 @@ the last one takes effect.
     enables fast random access when using seekable-aware tooling.
 * `--chunk-size=#`:
     Maximum uncompressed bytes per frame when using `--seekable`
-    (default: 256 KiB). Accepts K/M/G suffixes (and KiB/MiB/GiB).
+    (default: 256 KiB; minimum: 1 KiB). Accepts K/M/G suffixes (and KiB/MiB/GiB).
 * `-C`, `--[no-]check`:
     add integrity check computed from uncompressed data (default: enabled)
 * `--[no-]content-size`:
